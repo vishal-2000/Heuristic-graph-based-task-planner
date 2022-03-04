@@ -4,7 +4,7 @@ Heuristic graph based task planner for table top manipulators (handles occupancy
 ## Tasks
 - [x] Target place occupancy detection
 - [x] Fast and optimal buffer place sampler 
-- [ ] Stack-relationships detection
+- [x] Stack-relationships detection
 
 
 
