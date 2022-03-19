@@ -20,13 +20,83 @@ from rendering_scenes_in_o3d import get_object_list_from_yaml, save_pcd, draw_ge
 import copy
 
 class SGNode:
-    def __init__(self, object_name, parent):
+    def __init__(self, object_name, mesh_id, parents):
         '''
         object_name: Current object name
-        parent: Link to parent's node
+        parents: Parents' node ids
         '''
         self.object = object_name
-        self.parent = parent
+        self.mesh_id = mesh_id
+        self.parents = parents
+
+    
+
+def get_a_graph_from_obj_dict(object_stacks):
+    '''
+    Parameters:
+    object_stacks: {
+        'mesh_id': {
+            'current_object_info': {
+                'object': <object_label>,
+                'mesh_id': <object_mesh_id>
+            },
+            'mesh_ids_of_objects_under_it': [i, j, ...]
+        }
+    }
+
+    Return:
+    stacks: list of stacks = [[stack_1 mesh ids (left to right ids indicate bottom to top in the stack)], 
+                                [stack 2], ...etc]
+    '''
+    stacks = []
+    # nodes = []
+    node_dict = {}
+    for i, key in enumerate(object_stacks):
+        # Here key == mesh_id of the object
+        obj_name = object_stacks[key]['current_object_info']['object']
+        mesh_id = key
+        parents = object_stacks[key]['mesh_ids_of_objects_under_it']
+        node = SGNode(obj_name, mesh_id, parents)   
+        node_dict[key] = node
+
+    # Detect and break cycles in the obtained graph
+    for i, key in enumerate(node_dict):
+        # Run bfs based cycle-detection
+        visited = np.zeros(len(node_dict.keys()))
+        # print(visited)
+        head = node_dict[key]
+        # print("Node type: {}, mesh id type: {}".format(type(head), int(head.mesh_id)))
+        to_visit_list = []
+        # print(i)
+        while head != None:
+            # print(i)
+            # print(i, int(head.mesh_id))
+            visited[int(head.mesh_id)] = 1
+            cycle_parents = []
+            for parent in head.parents:
+                if visited[int(parent)] == 1:
+                    # Found a cycle
+                    # Break the cycle by removing the parent from the parent list
+                    cycle_parents.append(parent)
+                to_visit_list.append(parent)
+            for parent in cycle_parents:
+                head.parents.remove(parent)
+                if parent in to_visit_list:
+                    to_visit_list.remove(parent)
+
+            if len(to_visit_list)!=0:
+                # print(type(to_visit_list[0]))
+                head = node_dict[str(to_visit_list[0])]
+                to_visit_list.pop(0) 
+            else:
+                break
+
+    # Print the obtained tree after removing all the cycles in the given graph
+    print("\nPrinting the modified trees:\n")
+    for i, key in enumerate(node_dict):
+        print("Object_name: {}\tMesh_id: {}\tParent_list: {}".format(node_dict[key].object, node_dict[key].mesh_id, node_dict[key].parents))      
+
+    return node_dict  
 
 def generate_scene_graph_from_object_dict(object_dict, mesh_dir='/home/vishal/Volume_E/Active/Undergrad_research/Ocrtoc/OCRTOC_software_package/ocrtoc_materials/models/'):
     '''Generate scene graph for the given object labels and poses
@@ -52,7 +122,7 @@ def generate_scene_graph_from_object_dict(object_dict, mesh_dir='/home/vishal/Vo
     meshes = []
     pcds =[]
 
-    colors = [[0, 0, 0], [0.30, 0, 0], [0, 0.3, 0], [0, 0, 0.3], [0.3, 0.3, 0], [0.3, 0, 0.3]]
+    colors = [[0, 0, 0], [0.30, 0, 0], [0, 0.3, 0], [0, 0, 0.3], [0.3, 0.3, 0], [0.3, 0, 0.3], [0.3, 0.3, 0.3]]
     counter = -1
 
     for i, key in enumerate(object_dict):
@@ -71,7 +141,8 @@ def generate_scene_graph_from_object_dict(object_dict, mesh_dir='/home/vishal/Vo
             # Translate the mesh to the desired position
             required_pos = np.array([object_pose[0], object_pose[1], object_pose[2]])
             dt = required_pos - center
-            mesh.translate((dt[0], dt[1], dt[2]))
+            # mesh.translate((dt[0], dt[1], dt[2]))
+            mesh.translate(required_pos)
 
             pcd = mesh.sample_points_poisson_disk(number_of_points=50, init_factor=5, pcl=None)
 
@@ -98,7 +169,7 @@ def generate_scene_graph_from_object_dict(object_dict, mesh_dir='/home/vishal/Vo
             }
 
     o3d.visualization.draw_geometries(meshes)
-    o3d.visualization.draw_geometries(pcds)
+    # o3d.visualization.draw_geometries(pcds)
 
     ray_direction = [0, 0, -1]
 
@@ -108,7 +179,7 @@ def generate_scene_graph_from_object_dict(object_dict, mesh_dir='/home/vishal/Vo
     for i, key in enumerate(object_info_dict):
         # if i<=2: 
         #     continue
-        print("Object: {}\tmesh id{}".format(key, object_info_dict[key]['object']))
+        # print("Object: {}\tmesh id: {}".format(key, object_info_dict[key]['object']))
         pcd = object_info_dict[key]['pcd']
         ray_list = []
         n_pts = len(pcd)
@@ -130,6 +201,8 @@ def generate_scene_graph_from_object_dict(object_dict, mesh_dir='/home/vishal/Vo
         geometry_ids = []
         for g_id in geometry_ids_init:
             if g_id <= len(object_info_dict) and g_id >= 0:
+                if int(g_id) == int(key):
+                    continue
                 geometry_ids.append(g_id)
         
         # exit()
@@ -141,6 +214,8 @@ def generate_scene_graph_from_object_dict(object_dict, mesh_dir='/home/vishal/Vo
             'mesh_ids_of_objects_under_it': geometry_ids
         }
         # print("Object name: {}\tObject mesh id: {}\nObject stack list: {}\n".format(object_info_dict[key]['object'], object_info_dict[key]['mesh_id'], geometry_ids))
+
+    get_a_graph_from_obj_dict(object_stacks=object_stacks)
 
     # rays = o3d.core.Tensor(ray_list,
     #                dtype=o3d.core.Dtype.Float32)
@@ -165,23 +240,27 @@ def generate_scene_graph_from_object_dict(object_dict, mesh_dir='/home/vishal/Vo
 
     # print("Mesh id dict: {}\n".format(mesh_id_dict))
     # print("Object dict: {}\n".format(object_dict))
-    print("Object stacking info dict: {}\n".format(object_stacks))
+    # print("Object stacking info dict: {}\n".format(object_stacks))
     
 
 
 
 if __name__=='__main__':
+    import time
+    st = time.time()
     scene_dir = '/home/vishal/Volume_E/Active/Undergrad_research/Ocrtoc/OCRTOC_software_package/ocrtoc_materials/targets' # './final_scenes'
     mesh_dir = '/home/vishal/Volume_E/Active/Undergrad_research/Ocrtoc/OCRTOC_software_package/ocrtoc_materials/models/'
-    scenes = ['1-1-1', '2-2-2', '5-3-1', '6-1-2']
+    scenes = ['1-1-1', '2-2-2', '5-3-1', '6-1-2', '6-1-1', '4-1-2', '4-1-1', '2-1-1', '1-5-2', '1-2-2', '3-2-1', '4-2-2']
     yaml_paths = []
     for scene in scenes:
         yaml_paths.append('{}/{}.yaml'.format(scene_dir, scene))
-    current_scene_index = 1
+    current_scene_index = 5 # len(scenes) - 1
 
     object_dict = get_object_list_from_yaml(yaml_paths[current_scene_index])
 
     generate_scene_graph_from_object_dict(object_dict, mesh_dir=mesh_dir)
+    end = time.time()
+    print("Time taken: {}".format(end-st))
 
     # meshes = []
     # pcd_dict = {}
