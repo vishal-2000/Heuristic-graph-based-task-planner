@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 from misc import Object
 from rendering_scenes_in_o3d import get_object_list_from_yaml, save_pcd, draw_geometries
 import copy
+import json # For saving object stack dictionary
 
 class SGNode:
     def __init__(self, object_name, mesh_id, parents):
