@@ -16,6 +16,7 @@ This file contains various gradient-free search methods for searching the best b
 List of implemented methods:
 1. Marching-grid algorithm - https://www.youtube.com/watch?v=CqhCHE5s13k
 '''
+from multiprocessing.dummy import current_process
 import open3d as o3d
 import copy
 import numpy as np
@@ -23,6 +24,7 @@ import cv2
 from buffer_detection import generate_2D_occupancy_map
 from misc import Object
 import time
+from scipy import signal
 
 def get_occupancy_percentage(target_pose_6D, scene_omap, entity):
     '''Gets the percentage of target space that is occupied
@@ -124,6 +126,54 @@ def marching_grid(scene_pcd, object_mesh_path:str, target_pose_6D: list, OCC_THR
 
     return buffer_spot
 
+def convolutional_buffer_sampler(scene_omap, entity_omap, target_6D_pose, scene_name='-', object_name='-'):
+    '''Convolutional Buffer Sampler
+    Samples buffer spot by fast-occupancy-collision checking using the convolution operation
+
+    Parameters:
+    scene_omap: Occupancy map of the scene (usually of size 60*120)
+    entity_omap: Occupancy map of the target object (usually of varying sizes (of order 10*20 or so))
+    target_6D_pose: The target goal pose of the object (closest to which should be our sampled spot)
+
+    '''
+    # Convolve scene map with kernel map by adding 'same' padding (with padding value=1 (not zero, to prevent boundary placements))
+    convolved_omap = signal.convolve2d(scene_omap, entity_omap, mode='same', boundary='fill', fillvalue=1)
+
+    max_val = np.amax(convolved_omap)
+    min_val = np.amin(convolved_omap)
+    print("Minimum occupancy in the scene: {}".format(min_val))
+    print("Indices of positions with min occupied value: {}".format(np.where(convolved_omap <= min_val)))
+
+    min_indices = np.where(convolved_omap <= min_val)
+    print('Min indices shape: {}'.format(min_indices[0].shape))
+
+    cv2.imshow("Convolved map", (convolved_omap/(max_val)* 255).astype(np.uint8))
+    cv2.waitKey(0)
+    cv2.imwrite('./results/convolved_{}-{}.png'.format('2-2-2', 'green_bowl'), (convolved_omap/(max_val)* 255).astype(np.uint8))
+
+    # Get the closest optimal spot
+    nrows, ncols = convolved_omap.shape
+    target_2d = np.array([target_6D_pose[0], target_6D_pose[1]])
+    min_dist = 0.6*0.6 + 1.2*1.2
+    min_pos = np.array([-1, -1])
+    for i in range(nrows):
+        for j in range(ncols):
+            if convolved_omap[i][j] == min_val:
+                current_pos = np.array([float(i)/100 - 0.3, float(j)/100 - 0.6])
+                dist_to_target = np.linalg.norm(current_pos - target_2d)
+                # print("dist to the target: {}".format(dist_to_target))
+                if dist_to_target < min_dist:
+                    min_pos = current_pos
+                    min_dist = dist_to_target
+    
+    # Check if the returned pos is valid
+    print("Predicted min pos: {}".format(min_pos))
+    if min_pos[0] < 0.33 and min_pos[0] > -0.33:
+        if min_pos[1] < 0.63 and min_pos[1] > -0.63:
+            return min_pos
+
+    return [] # implies no valid min pos found
+
 def get_kernel_occupancy_for_object(mesh_path):
     entity = Object(mesh_path=object_mesh_path)
     buffer_spot = [0, 0, 0.03, 0.0, -0.01, 1.57]
@@ -134,12 +184,16 @@ def get_kernel_occupancy_for_object(mesh_path):
     cv2.imshow("occupancy map", (entity_omap * 255).astype(np.uint8))
     cv2.waitKey(0)
 
+    return entity_omap
+    
+
+
     
 
 if __name__=='__main__':
     start_time = time.time()
 
-    scene_pcd_path = './2-2-2_final.pcd'
+    scene_pcd_path = '5-3-1.pcd' # './2-2-2_final.pcd'
     pcd = o3d.io.read_point_cloud(scene_pcd_path)
 
     scene_omap = generate_2D_occupancy_map(np.asarray(pcd.points)*100, xy_min_max=[-30, 30, -60, 60], threshold=1, dir_path='./results/{}-{}.png'.format('2-2-2', 'green_bowl'), save=True)
@@ -147,9 +201,28 @@ if __name__=='__main__':
     cv2.imshow("occupancy map", (scene_omap * 255).astype(np.uint8))
     cv2.waitKey(0)
 
+    target_pose_6D = [0.1, 0.35, 0.03, 0.0, -0.01, 1.57]
+
     object_mesh_path = '/home/vishal/Volume_E/Active/Undergrad_research/Ocrtoc/OCRTOC_software_package/ocrtoc_materials/models/{}/textured.obj'.format('green_bowl')
 
-    get_kernel_occupancy_for_object(object_mesh_path)
+    entity_omap = get_kernel_occupancy_for_object(object_mesh_path)
+
+    # Convolve the kernel map on the scene map
+    min_pos = convolutional_buffer_sampler(scene_omap, entity_omap, target_6D_pose=target_pose_6D, scene_name='2-2-2', object_name='green_bowl')
+    if len(min_pos)>0:
+        print("Min position found: {}".format(min_pos))
+        buffer_spot = [min_pos[0], min_pos[1], target_pose_6D[2], target_pose_6D[3], target_pose_6D[4], target_pose_6D[5]]
+        entity = Object(mesh_path=object_mesh_path)
+        entity_pcd = entity.render_to_pose_and_get_pcd(object_pose=buffer_spot)
+        entity_omap = generate_2D_occupancy_map(world_dat = np.asarray(entity_pcd.points)*100, xy_min_max=[-30, 30, -60, 60], threshold=1, dir_path='./results/object_{}-{}.png'.format('2-2-2', 'green_bowl'), save=True)
+        scene_omap = generate_2D_occupancy_map(np.asarray(pcd.points)*100, xy_min_max=[-30, 30, -60, 60], threshold=1, dir_path='./results/{}-{}.png'.format('2-2-2', 'green_bowl'), save=True)
+        fused_omap = np.logical_or(entity_omap, scene_omap)
+
+        cv2.imshow("Buffer spotted!", (fused_omap * 255).astype(np.uint8))
+        cv2.waitKey(0)
+        cv2.imwrite('./results/buffer_{}-{}.png'.format('2-2-2', 'green_bowl'),(fused_omap * 255).astype(np.uint8))
+    else:
+        print("Min pos not found")
     exit()
 
     target_pose_6D = [0.1, 0.35, 0.03, 0.0, -0.01, 1.57]
