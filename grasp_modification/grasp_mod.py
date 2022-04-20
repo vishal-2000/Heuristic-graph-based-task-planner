@@ -11,6 +11,7 @@ import numpy as np
 from PIL import Image
 from time import sleep
 import cv2
+import open3d as o3d
 # from sklearn.covariance import graphical_lasso
 
 class GraspModification:
@@ -121,18 +122,18 @@ class GraspModification:
         '''
         # modified_k_map = kernel_map + 10
         # print("Modified map: {}".format(modified_k_map))
-        print("Kernel map: {}".format(abs(kernel_map+self.finger_height)))
+        print("Valid map: {}".format(abs(kernel_map+self.finger_height)))
         k_img = Image.fromarray(np.uint8(kernel_map+self.finger_height)) # Converts all negative elements to +ve (will be reversed later)
         r_img = k_img.rotate(angle=angle, fillcolor=10+self.finger_height) # Angle in degrees
         rk_map = np.array(r_img, dtype=float) 
-        print("Rotated kernel: {}".format(rk_map-4))
+        print("Rotated Valid: {}".format(rk_map-self.finger_height))
         
         cv2.imshow("Valid image", np.uint8((kernel_map)*15))
         cv2.waitKey(0)
 
-        cv2.imshow("Rotated Valid image", np.uint8((rk_map-4)*15))
+        cv2.imshow("Rotated Valid image", np.uint8((rk_map-self.finger_height)*15))
         cv2.waitKey(0)
-        return rk_map-4
+        return rk_map-self.finger_height
 
     def generate_random_h_map_1cm_res(self):
         '''Generates a height map (random) of size (20*20) with resolution of 1cm
@@ -165,19 +166,69 @@ class GraspModification:
                     collision_map[i+int(g_nr/2), j+int(g_nc/2)] = 0
                 else: # No collision
                     collision_map[i+int(g_nr/2), j+int(g_nc/2)] = 1
-                    if np.any(v_map+grasp_height-self.finger_height - sub_map <0):# Valid grasp pose
-                        valid_map[i+int(g_nr/2), j+int(g_nc/2)] = 1
+                    if np.min(v_map+grasp_height-self.finger_height - sub_map) < -1:# Valid grasp pose
+                        valid_map[i+int(g_nr/2), j+int(g_nc/2)] = np.max(-1*(v_map+grasp_height-self.finger_height - sub_map))# 1
     
         return collision_map, valid_map
 
+    def pcd_to_height_map_1cm_res(self, pcd, target_pos, x_range=0.30, y_range=0.30):
+        '''Cuts a 30cm*30cm boundary around target pos in the given pcd and converts it into a height map
+        This gives an effective search space of size - 17cm*17cm (Assuming the kernel map to be of size 
+        14cm * 14cm)
+
+        Height map resolution: 1cm (1 pixel == 1cm*1cm)
+
+        Parameters
+        pcd: pcd.points (np.array) (point cloud of the scene)
+        target_pos: [x, y, z]: list (target grasp pose)
+
+        Returns:
+        (height_map, (height_map_origin_coords_world_frame)) - 
+        '''
+        # For resolution of 1cm*1cm, multiply pcd by 100
+        pcd_m = (np.round(pcd * 100))
+        pcd_m[:, 2] = pcd[:, 2] # Only x and y coordinates are scaled up to represent pixels. Z values retain their meaning (value in cm)
+        x_minmax = [target_pos[0] - (x_range/2), target_pos[0]+(x_range/2 - 0.01)]*100
+        y_minmax = [target_pos[1] - (y_range/2), target_pos[1]+(y_range/2 - 0.01)]*100
+        # x_range = 0.6
+        # y_range = 1.2
+
+        pixel_maxes = np.zeros(shape=(int(x_range*100), int(y_range*100)), dtype=float)
+
+        for point in pcd:
+            # print(point)
+            if point[0] >= x_minmax[0] and point[0] <= x_minmax[1] and point[1] >= y_minmax[0] and point[1] <= y_minmax[1]:
+                # Valid point
+                # print("Yes")
+                pixel_coord = [int(100*(point[0] - x_minmax[0])), int(100*(point[1] - y_minmax[0]))]
+                print(point, pixel_coord)
+                if pixel_maxes[pixel_coord[0], pixel_coord[1]] < point[2]:
+                    # print("Yes")
+                    pixel_maxes[pixel_coord[0], pixel_coord[1]] = point[2]
+        
+        cv2.imshow("Scene hmap", np.uint8(pixel_maxes*255/np.max(pixel_maxes)))
+        cv2.waitKey(0)
+
+        return pixel_maxes
 
 if __name__=='__main__':
+    pcd_path = '/home/vishal/Volume_E/Active/Undergrad_research/Ocrtoc/Vishal_planner_stuff/Heuristic-graph-based-task-planner/buffer_detection/2-2-2.pcd'
+
+    pcd = o3d.io.read_point_cloud(pcd_path)
+    o3d.visualization.draw_geometries([pcd])
     grasp_cl = GraspModification()
-    scene_test_hmap = grasp_cl.generate_random_h_map_1cm_res()
+
+    scene_test_hmap = (100*grasp_cl.pcd_to_height_map_1cm_res(np.asarray(pcd.points), target_pos=[-0.05, 0.15, 0], x_range=0.25, y_range=0.25)).astype(int)
+    print(scene_test_hmap)
+    # scene_test_hmap = grasp_cl.generate_random_h_map_1cm_res()
+
+    # cv2.imshow("scENE HEIGHT_map", np.uint8(scene_test_hmap*255))
+    # cv2.waitKey(0)
+
     k_map = grasp_cl.get_gripper_standard_collision_map_1cm_resolution()
     v_map = grasp_cl.get_grip_validation_map_1cm_res()
     # Now, rotate it
-    angles = [0, 30, 45, 60, 90, 120, 135, 150]
+    angles = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 175]
     # k_maps = {
     #     '0': k_map
     # }
@@ -185,10 +236,12 @@ if __name__=='__main__':
         print("Angle: {}".format(angle))
         rk_map = grasp_cl.rotate_kernel_map(k_map, angle)
         vk_map = grasp_cl.rotate_v_map(v_map, angle)
-        collision_map, valid_map = grasp_cl.return_collision_and_valid_maps(scene_test_hmap, rk_map, v_map, 8)
+        collision_map, valid_map = grasp_cl.return_collision_and_valid_maps(scene_test_hmap, rk_map, v_map, 12)
         cv2.imshow("Collision_map", np.uint8(collision_map*255))
         cv2.waitKey(0)
-        cv2.imshow("Valid_map", np.uint8(valid_map*255))
+        print("Max valid: {}".format(np.max(valid_map)))
+        print("Validation map final : {}".format(valid_map))
+        cv2.imshow("Valid_map", np.uint8((valid_map/max(0.001, np.max(valid_map)))*255))
         cv2.waitKey(0)
         # k_maps[str(angle)] = rk_map
     # grasp_cl.get_gripper_standard_collision_map_5mm_resolution()
